@@ -1,3 +1,5 @@
+import argparse
+
 from workers.gpu_worker import GPUworker
 from lb.load_balancer import LoadBalancer, LoadBalancingStrategy
 from master.scheduler import Scheduler
@@ -30,6 +32,10 @@ def print_dashboard(metrics):
     print(f"  P50 (Median):       {summary['p50_latency']*1000:.2f}ms")
     print(f"  P95:                {summary['p95_latency']*1000:.2f}ms")
     print(f"  P99:                {summary['p99_latency']*1000:.2f}ms")
+
+    print("\nGPU UTILIZATION")
+    print("-"*40)
+    print(f"  Average:            {summary['avg_gpu_utilization']*100:.2f}%")
     
     # Load Balance Section
     lb_score = metrics.get_load_balance_score()
@@ -58,27 +64,49 @@ def print_dashboard(metrics):
     print("\n" + "="*70)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Distributed LLM/RAG load-balancing simulation")
+    parser.add_argument("--users", type=int, default=1000, help="total number of simulated users/requests")
+    parser.add_argument("--concurrency", type=int, default=100, help="maximum simultaneous in-flight requests")
+    parser.add_argument("--workers", type=int, default=10, help="number of simulated GPU worker nodes")
+    parser.add_argument("--worker-capacity", type=int, default=4, help="parallel request slots per worker")
+    parser.add_argument("--failure-rate", type=float, default=0.0, help="simulated worker failure probability per request")
+    parser.add_argument(
+        "--strategy",
+        choices=[strategy.value for strategy in LoadBalancingStrategy],
+        default=LoadBalancingStrategy.LEAST_CONNECTIONS.value,
+        help="load-balancing strategy"
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     # Reset metrics for fresh start
     reset_metrics()
     
     # Create GPU workers
-    workers = [GPUworker(i) for i in range(10)]  # Simulate 4 GPUs
+    workers = [
+        GPUworker(i, failure_rate=args.failure_rate, capacity=args.worker_capacity)
+        for i in range(args.workers)
+    ]
     
     # Load Balancer with strategy selection
     # Options: ROUND_ROBIN, LEAST_CONNECTIONS, LOAD_AWARE
-    lb = LoadBalancer(workers, strategy=LoadBalancingStrategy.LEAST_CONNECTIONS)
+    lb = LoadBalancer(workers, strategy=LoadBalancingStrategy(args.strategy))
     
     # Scheduler
     scheduler = Scheduler(lb)
     
-    # Run simulation with 1000 concurrent users
+    # Run simulation with configurable 1000+ user load
     print("\n" + "="*60)
-    print("Starting Load Test with 100 Users")
+    print(f"Starting Load Test with {args.users} Users")
+    print(f"Max Concurrent Users: {args.concurrency}")
+    print(f"GPU Workers: {args.workers} | Capacity per Worker: {args.worker_capacity}")
     print(f"Load Balancing Strategy: {lb.strategy.value}")
     print("="*60 + "\n")
     
-    run_load_test(scheduler, num_users=100)
+    run_load_test(scheduler, num_users=args.users, max_concurrent=args.concurrency)
     
     # Display comprehensive metrics dashboard
     metrics = get_metrics_collector()
@@ -95,6 +123,8 @@ def main():
         print(f"  - Active Requests: {worker_stats['active_requests']}")
         print(f"  - Avg Latency: {worker_stats['avg_latency']:.3f}s")
         print(f"  - Load Score: {worker_stats['load_score']:.2f}")
+        print(f"  - Capacity: {worker_stats['capacity']}")
+        print(f"  - Utilization: {worker_stats['utilization']*100:.1f}%")
         print(f"  - Healthy: {worker_stats['is_healthy']}")
         
     print(f"\nLoad Balancing Strategy: {lb.strategy.value}")

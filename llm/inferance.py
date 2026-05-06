@@ -1,19 +1,34 @@
+import os
+import time
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 import torch
 
-# Load model and tokenizer (done once for efficiency)
-model_name = 'distilgpt2'
-tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-model = GPT2LMHeadModel.from_pretrained(model_name)
+USE_REAL_LLM = os.getenv("USE_REAL_LLM", "1") == "1"
 
-# Set pad token
-tokenizer.pad_token = tokenizer.eos_token
+if USE_REAL_LLM:
+    # Load model and tokenizer (done once for efficiency)
+    model_name = 'distilgpt2'
+    tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+    model = GPT2LMHeadModel.from_pretrained(model_name)
 
-# Use GPU if available
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model.to(device)
+    # Set pad token
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # Use GPU if available
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+else:
+    tokenizer = None
+    model = None
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def run_llm(query, context):
+    if not USE_REAL_LLM:
+        # Fast simulation mode lets the distributed system be tested at 1000+
+        # requests without waiting for hundreds of local GPT-2 generations.
+        time.sleep(0.02)
+        return f"Simulated answer for '{query}' using retrieved context: {context[:160]}"
+
     # Prepare input prompt
     prompt = f"Context: {context}\nQuestion: {query}\nAnswer:"
     
@@ -26,10 +41,9 @@ def run_llm(query, context):
         outputs = model.generate(
             inputs['input_ids'],
             attention_mask=inputs['attention_mask'],
-            max_length=inputs['input_ids'].shape[1] + 100,  # Generate up to 100 new tokens
+            max_new_tokens=30,
             num_return_sequences=1,
             no_repeat_ngram_size=2,
-            early_stopping=True,
             pad_token_id=tokenizer.eos_token_id
         )
     

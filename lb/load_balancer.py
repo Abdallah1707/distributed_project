@@ -42,11 +42,13 @@ class LoadBalancer:
         self.index = 0
         self.health_check_interval = 5
         self.failure_recovery_seconds = 15
+        self.lock = threading.RLock()
 
         # Track metrics per worker
         self.worker_metrics: Dict[int, WorkerMetrics] = {
             w.id: WorkerMetrics(worker_id=w.id) for w in workers
         }
+        self.worker_by_id = {w.id: w for w in workers}
         # Metrics collector
         self.metrics = get_metrics_collector()
         # Start background health monitor
@@ -55,19 +57,21 @@ class LoadBalancer:
     
     def set_strategy(self, strategy: LoadBalancingStrategy):
         """Change load balancing strategy at runtime"""
-        self.strategy = strategy
+        with self.lock:
+            self.strategy = strategy
         print(f"[LoadBalancer] Strategy changed to: {strategy.value}")
     
     def get_next_worker(self, exclude_ids: Optional[Set[int]] = None):
         """Get next worker based on current strategy"""
-        exclude_ids = exclude_ids or set()
-        if self.strategy == LoadBalancingStrategy.ROUND_ROBIN:
+        with self.lock:
+            exclude_ids = exclude_ids or set()
+            if self.strategy == LoadBalancingStrategy.ROUND_ROBIN:
+                return self._round_robin(exclude_ids)
+            elif self.strategy == LoadBalancingStrategy.LEAST_CONNECTIONS:
+                return self._least_connections(exclude_ids)
+            elif self.strategy == LoadBalancingStrategy.LOAD_AWARE:
+                return self._load_aware(exclude_ids)
             return self._round_robin(exclude_ids)
-        elif self.strategy == LoadBalancingStrategy.LEAST_CONNECTIONS:
-            return self._least_connections(exclude_ids)
-        elif self.strategy == LoadBalancingStrategy.LOAD_AWARE:
-            return self._load_aware(exclude_ids)
-        return self._round_robin(exclude_ids)
     
     def _round_robin(self, exclude_ids: Set[int]):
         """Round Robin - distribute requests evenly in order"""
@@ -115,20 +119,29 @@ class LoadBalancer:
         exclude_ids = exclude_ids or set()
         worker = self.get_next_worker(exclude_ids)
         if worker is None:
+            self.metrics.record_request(
+                worker_id=-1,
+                latency=0,
+                success=False,
+                error="No healthy workers available to process request"
+            )
             raise RuntimeError("No healthy workers available to process request")
         
-        self.worker_metrics[worker.id].active_requests += 1
-        self.worker_metrics[worker.id].last_used = time.time()
+        with self.lock:
+            self.worker_metrics[worker.id].active_requests += 1
+            self.worker_metrics[worker.id].last_used = time.time()
         
         try:
             response = worker.process(request)
             latency = response.get('latency', 0)
+            utilization = response.get("gpu_utilization", 0)
             
             # Update worker metrics after processing
-            self.worker_metrics[worker.id].active_requests -= 1
-            self.worker_metrics[worker.id].total_requests += 1
-            self.worker_metrics[worker.id].total_latency += latency
-            self.worker_metrics[worker.id].consecutive_failures = 0
+            with self.lock:
+                self.worker_metrics[worker.id].active_requests = max(0, self.worker_metrics[worker.id].active_requests - 1)
+                self.worker_metrics[worker.id].total_requests += 1
+                self.worker_metrics[worker.id].total_latency += latency
+                self.worker_metrics[worker.id].consecutive_failures = 0
             
             # Record to global metrics collector
             self.metrics.record_request(
@@ -136,52 +149,62 @@ class LoadBalancer:
                 latency=latency,
                 success=True
             )
+            self.metrics.record_gpu_utilization(utilization)
             
             return response
         except Exception as e:
-            self.worker_metrics[worker.id].active_requests = max(0, self.worker_metrics[worker.id].active_requests - 1)
-            self.worker_metrics[worker.id].consecutive_failures += 1
-            self.worker_metrics[worker.id].last_failure_time = time.time()
+            with self.lock:
+                self.worker_metrics[worker.id].active_requests = max(0, self.worker_metrics[worker.id].active_requests - 1)
+                self.worker_metrics[worker.id].consecutive_failures += 1
+                self.worker_metrics[worker.id].last_failure_time = time.time()
             self.mark_worker_unhealthy(worker.id)
-            
+
+            if retries > 0:
+                print(f"[LoadBalancer] Worker {worker.id} failed; retrying request {request.id} on another worker ({retries} retries left)")
+                exclude_ids.add(worker.id)
+                return self.dispatch(request, retries=retries - 1, exclude_ids=exclude_ids)
+
             self.metrics.record_request(
                 worker_id=worker.id,
                 latency=0,
                 success=False,
                 error=str(e)
             )
-
-            if retries > 0:
-                print(f"[LoadBalancer] Worker {worker.id} failed; retrying request {request.id} on another worker ({retries} retries left)")
-                exclude_ids.add(worker.id)
-                return self.dispatch(request, retries=retries - 1, exclude_ids=exclude_ids)
             
             raise RuntimeError(f"Request {request.id} failed after retries: {e}")
     
     def get_worker_stats(self) -> Dict:
         """Get current statistics for all workers"""
-        stats = {}
-        for worker_id, metrics in self.worker_metrics.items():
-            stats[worker_id] = {
-                'active_requests': metrics.active_requests,
-                'total_requests': metrics.total_requests,
-                'avg_latency': metrics.avg_latency,
-                'load_score': metrics.load_score,
-                'is_healthy': metrics.is_healthy,
-                'consecutive_failures': metrics.consecutive_failures
-            }
-        return stats
+        with self.lock:
+            stats = {}
+            for worker_id, metrics in self.worker_metrics.items():
+                worker_status = self.worker_by_id[worker_id].get_status()
+                stats[worker_id] = {
+                    'active_requests': metrics.active_requests,
+                    'total_requests': metrics.total_requests,
+                    'avg_latency': metrics.avg_latency,
+                    'load_score': metrics.load_score,
+                    'is_healthy': metrics.is_healthy,
+                    'consecutive_failures': metrics.consecutive_failures,
+                    'capacity': worker_status.get('capacity', 1),
+                    'utilization': worker_status.get('utilization', 0)
+                }
+            return stats
     
     def mark_worker_unhealthy(self, worker_id: int):
         """Mark a worker as unhealthy (for fault tolerance)"""
-        if worker_id in self.worker_metrics:
+        with self.lock:
+            if worker_id not in self.worker_metrics:
+                return
             self.worker_metrics[worker_id].is_healthy = False
             self.worker_metrics[worker_id].last_failure_time = time.time()
             print(f"[LoadBalancer] Worker {worker_id} marked as unhealthy")
     
     def mark_worker_healthy(self, worker_id: int):
         """Mark a worker as healthy again"""
-        if worker_id in self.worker_metrics:
+        with self.lock:
+            if worker_id not in self.worker_metrics:
+                return
             self.worker_metrics[worker_id].is_healthy = True
             self.worker_metrics[worker_id].consecutive_failures = 0
             print(f"[LoadBalancer] Worker {worker_id} marked as healthy")
@@ -190,7 +213,9 @@ class LoadBalancer:
         while True:
             time.sleep(self.health_check_interval)
             now = time.time()
-            for worker_id, metrics in self.worker_metrics.items():
+            with self.lock:
+                worker_items = list(self.worker_metrics.items())
+            for worker_id, metrics in worker_items:
                 if not metrics.is_healthy:
                     if metrics.last_failure_time and now - metrics.last_failure_time >= self.failure_recovery_seconds:
                         self.mark_worker_healthy(worker_id)

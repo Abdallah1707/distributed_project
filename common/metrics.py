@@ -14,6 +14,8 @@ class SystemMetrics:
     failed_requests: int = 0
     total_latency: float = 0.0
     start_time: float = field(default_factory=time.time)
+    total_gpu_utilization: float = 0.0
+    gpu_utilization_samples: int = 0
     
     @property
     def elapsed_time(self) -> float:
@@ -79,6 +81,12 @@ class MetricsCollector:
             
             # Worker-specific metrics
             self.worker_latencies[worker_id].append(latency)
+
+    def record_gpu_utilization(self, utilization: float):
+        """Record a simulated GPU utilization sample from a worker."""
+        with self.lock:
+            self.system_metrics.total_gpu_utilization += utilization
+            self.system_metrics.gpu_utilization_samples += 1
             
     def get_percentile(self, percentile: float) -> float:
         """Calculate latency percentile (e.g., 95 for P95)"""
@@ -142,6 +150,11 @@ class MetricsCollector:
                 'p95_latency': self.get_percentile(95),
                 'p99_latency': self.get_percentile(99),
                 'elapsed_time': self.system_metrics.elapsed_time,
+                'avg_gpu_utilization': (
+                    self.system_metrics.total_gpu_utilization /
+                    self.system_metrics.gpu_utilization_samples
+                    if self.system_metrics.gpu_utilization_samples > 0 else 0
+                ),
                 'errors': dict(self.error_types)
             }
     
