@@ -1,6 +1,6 @@
 import argparse
 
-from workers.gpu_worker import GPUworker
+from workers.remote_gpu_worker import load_remote_workers
 from lb.load_balancer import LoadBalancer, LoadBalancingStrategy
 from master.scheduler import Scheduler
 from client.load_generator import run_load_test
@@ -72,6 +72,16 @@ def parse_args():
     parser.add_argument("--worker-capacity", type=int, default=4, help="parallel request slots per worker")
     parser.add_argument("--failure-rate", type=float, default=0.0, help="simulated worker failure probability per request")
     parser.add_argument(
+        "--workers-config",
+        default="config/workers.json",
+        help="JSON file containing remote worker URLs for distributed mode"
+    )
+    parser.add_argument(
+        "--local-workers",
+        action="store_true",
+        help="run workers inside this process instead of using remote worker laptops"
+    )
+    parser.add_argument(
         "--strategy",
         choices=[strategy.value for strategy in LoadBalancingStrategy],
         default=LoadBalancingStrategy.LEAST_CONNECTIONS.value,
@@ -85,11 +95,20 @@ def main():
     # Reset metrics for fresh start
     reset_metrics()
     
-    # Create GPU workers
-    workers = [
-        GPUworker(i, failure_rate=args.failure_rate, capacity=args.worker_capacity)
-        for i in range(args.workers)
-    ]
+    if args.local_workers:
+        from workers.gpu_worker import GPUworker
+
+        # Single-laptop fallback for testing without worker laptops.
+        workers = [
+            GPUworker(i, failure_rate=args.failure_rate, capacity=args.worker_capacity)
+            for i in range(args.workers)
+        ]
+        worker_mode = "local simulation"
+        worker_description = f"{args.workers} local workers | Capacity per Worker: {args.worker_capacity}"
+    else:
+        workers = load_remote_workers(args.workers_config)
+        worker_mode = "remote worker laptops"
+        worker_description = f"{len(workers)} remote workers from {args.workers_config}"
     
     # Load Balancer with strategy selection
     # Options: ROUND_ROBIN, LEAST_CONNECTIONS, LOAD_AWARE
@@ -102,7 +121,8 @@ def main():
     print("\n" + "="*60)
     print(f"Starting Load Test with {args.users} Users")
     print(f"Max Concurrent Users: {args.concurrency}")
-    print(f"GPU Workers: {args.workers} | Capacity per Worker: {args.worker_capacity}")
+    print(f"Worker Mode: {worker_mode}")
+    print(f"GPU Workers: {worker_description}")
     print(f"Load Balancing Strategy: {lb.strategy.value}")
     print("="*60 + "\n")
     
