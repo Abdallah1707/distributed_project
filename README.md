@@ -59,8 +59,54 @@ This system demonstrates a production-grade distributed architecture for serving
 - **`workers/gpu_worker.py`**: Simulates GPU nodes with capacity constraints and failure modes
 - **`workers/hf_worker_server.py`**: Real worker server for remote deployment (FastAPI + RAG + LLM)
 - **`llm/inferance.py`**: Runs either simulated responses or real Hugging Face inference
-- **`rag/retriever.py`**: FAISS-backed vector index for context retrieval
+- **`rag/retriever.py`**: FAISS-backed vector index with PDF document loading for context retrieval
+- **`rag/documents/`**: Directory for PDF knowledge base documents
 - **`common/metrics.py`**: Tracks comprehensive performance metrics
+
+## RAG System with PDF Documents
+
+The RAG system now supports loading documents from PDF files:
+
+### Adding Your Documents
+
+1. **Place PDF files** in `rag/documents/` directory:
+   ```
+   rag/
+   └── documents/
+       ├── README.md
+       ├── your_document.pdf
+       ├── research_paper.pdf
+       └── user_guide.pdf
+   ```
+
+2. **Automatic loading**: When the system starts, PDFs are automatically:
+   - Scanned and loaded
+   - Text extracted from each page
+   - Split into overlapping chunks for better context
+   - Converted to embeddings for semantic search
+
+3. **Fallback documents**: If no PDFs are found, the system uses sample documents about LLMs and distributed systems
+
+### Creating Sample PDFs
+
+Generate sample PDFs for testing:
+
+```powershell
+cd rag/documents
+python create_sample_pdfs.py
+cd ../..
+```
+
+This creates 3 sample PDFs about distributed systems, machine learning, and GPU computing.
+
+### Document Requirements
+
+- **Format**: PDF files only (`.pdf` extension)
+- **Content**: Must contain extractable text (not scanned images)
+- **Quality**: Best results with clear, readable PDFs
+- **Size**: Split very large documents (1000+ pages) for optimal performance
+
+See `rag/documents/README.md` for detailed instructions.
 
 ## Quick Start
 

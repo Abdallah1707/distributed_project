@@ -1,6 +1,7 @@
 faiss-cpu
 fastapi
 numpy
+PyPDF2
 requests
 sentence-transformers
 torch
