@@ -1,67 +1,347 @@
-# Efficient Load Balancing and GPU Cluster Task Distribution
+# Distributed LLM/RAG Serving System
 
-This project simulates a distributed LLM/RAG serving system that can accept 1000+ user requests, route them through a load balancer, process them on simulated GPU worker nodes, and report performance/fault-tolerance metrics.
+A scalable distributed system that simulates or runs real LLM and RAG workloads on GPU clusters. The system handles 1000+ concurrent requests, routes them through intelligent load balancers, and provides comprehensive performance metrics and fault tolerance.
 
-## Architecture
+## Project Overview
 
-- `client/load_generator.py`: simulates concurrent users with bounded concurrency.
-- `master/scheduler.py`: controller layer that receives requests and asks the load balancer to dispatch them.
-- `lb/load_balancer.py`: implements Round Robin, Least Connections, and Load-aware routing with retry-based task reassignment.
-- `workers/gpu_worker.py`: simulates GPU nodes, worker capacity, utilization, and node failures.
-- `rag/retriever.py`: retrieves relevant context from a small FAISS-backed vector index.
-- `llm/inferance.py`: runs either fast simulated LLM responses or real Hugging Face inference.
-- `workers/hf_worker_server.py`: exposes a remote worker HTTP API that runs RAG and Hugging Face inference on worker laptops.
-- `common/metrics.py`: tracks latency, throughput, success rate, load balance, errors, and simulated GPU utilization.
+This system demonstrates a production-grade distributed architecture for serving LLM/RAG applications across multiple worker nodes. It supports:
 
-## Setup
+- **Multiple Load Balancing Strategies**: Round Robin, Least Connections, and Load-aware routing
+- **Fault Tolerance**: Automatic retry and reassignment of failed requests
+- **Real or Simulated Workloads**: Switch seamlessly between real Hugging Face models and fast simulated responses
+- **Real or Simulated GPU Workers**: Test with simulated local workers or distribute across remote worker machines
+- **Comprehensive Metrics**: Latency, throughput, success rate, load balance score, and GPU utilization
+- **Scalable Architecture**: Handle 100s to 1000s of concurrent requests
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      CLIENT / LOAD GENERATOR                     │
+│                    (load_generator.py)                           │
+│               Generates 1000+ concurrent requests                │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────────┐
+│                      MASTER / SCHEDULER                         │
+│                    (scheduler.py)                               │
+│         Receives requests and coordinates load balancer         │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────────┐
+│                     LOAD BALANCER                               │
+│                 (load_balancer.py)                              │
+│    Routes requests using RR / LC / Load-aware strategies        │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+   ┌────▼────┐      ┌────▼────┐      ┌────▼────┐
+   │ WORKER 0 │      │ WORKER 1 │  ... │ WORKER N │
+   │          │      │          │      │          │
+   │ ┌──────┐ │      │ ┌──────┐ │      │ ┌──────┐ │
+   │ │ RAG  │ │      │ │ RAG  │ │      │ │ RAG  │ │
+   │ │Retri │ │      │ │Retri │ │      │ │Retri │ │
+   │ └──────┘ │      │ └──────┘ │      │ └──────┘ │
+   │ ┌──────┐ │      │ ┌──────┐ │      │ ┌──────┐ │
+   │ │ LLM  │ │      │ │ LLM  │ │      │ │ LLM  │ │
+   │ │(Real)│ │      │ │(Real)│ │      │ │(Real)│ │
+   │ └──────┘ │      │ └──────┘ │      │ └──────┘ │
+   └──────────┘      └──────────┘      └──────────┘
+   (Remote or Local Workers)
+```
+
+### Key Components
+
+- **`client/load_generator.py`**: Simulates concurrent users with configurable concurrency limits
+- **`master/scheduler.py`**: Controller that receives requests and interfaces with load balancer
+- **`lb/load_balancer.py`**: Implements multiple routing strategies and handles retry logic
+- **`workers/gpu_worker.py`**: Simulates GPU nodes with capacity constraints and failure modes
+- **`workers/hf_worker_server.py`**: Real worker server for remote deployment (FastAPI + RAG + LLM)
+- **`llm/inferance.py`**: Runs either simulated responses or real Hugging Face inference
+- **`rag/retriever.py`**: FAISS-backed vector index for context retrieval
+- **`common/metrics.py`**: Tracks comprehensive performance metrics
+
+## Quick Start
+
+### Single Machine (Simulated Workers + Simulated LLM)
+
+**Fastest way to test the distributed system without waiting for LLM inference:**
 
 ```powershell
+# Setup
+python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
+
+# Run with simulated workers and simulated LLM
+python main.py --users 1000 --concurrency 50 --workers 4 --worker-capacity 2 --local-workers
 ```
 
-## Run 1000+ Request Simulation
+### Single Machine (Simulated Workers + Real LLM)
 
-In distributed mode, worker laptops run real local Hugging Face inference through `workers/hf_worker_server.py`.
+**Test real Hugging Face models locally:**
 
 ```powershell
-python main.py --users 1000 --concurrency 50 --strategy least_connections --workers-config config/workers.json
+python main.py --users 100 --concurrency 10 --workers 4 --worker-capacity 2 --local-workers
 ```
 
-Available strategies:
+### Distributed Deployment (3 Laptops)
+
+**Laptop 1: Master/Load Balancer**
 
 ```powershell
-python main.py --strategy round_robin
-python main.py --strategy least_connections
-python main.py --strategy load_aware
+# Setup
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+
+# Edit config/workers.json with worker IPs, then run:
+python main.py --users 100 --concurrency 10 --strategy least_connections --workers-config config/workers.json
 ```
 
-For single-laptop testing without remote worker machines:
+**Laptop 2 & 3: Worker Servers**
 
 ```powershell
-python main.py --local-workers --users 100 --concurrency 10 --workers 4 --worker-capacity 2
+# Setup
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+
+# Start worker server (runs on port 8001 by default)
+python workers/hf_worker_server.py
 ```
 
-## Fault Tolerance Test
+Then update `config/workers.json` on Laptop 1:
 
-Increase `--failure-rate` to simulate GPU worker failures. Failed requests are retried on other healthy workers. Keep it low for large tests, because a high failure rate can intentionally exhaust the cluster.
+```json
+[
+  {
+    "id": 0,
+    "url": "http://192.168.1.20:8001",
+    "connect_timeout": 5,
+    "timeout": 180
+  },
+  {
+    "id": 1,
+    "url": "http://192.168.1.21:8001",
+    "connect_timeout": 5,
+    "timeout": 180
+  }
+]
+```
+
+## Switching Between Real and Simulated Modes
+
+### LLM: Real vs Simulated
+
+The LLM inference mode is controlled by the `USE_REAL_LLM` environment variable.
+
+**Simulated LLM (Fast - 20ms per request):**
 
 ```powershell
-python main.py --users 100 --concurrency 20 --workers 4 --worker-capacity 2 --failure-rate 0.05
+# Windows PowerShell
+$env:USE_REAL_LLM = "0"
+python main.py --users 1000 --concurrency 50 --workers 4 --worker-capacity 2 --local-workers
 ```
 
-The dashboard reports successful/failed requests and worker health at the end of the run.
-
-## Real LLM Mode
-
-Real GPT-2 inference is enabled by default and is much slower on CPU. Use it for small tests only unless you have suitable GPU resources.
+**Real Hugging Face LLM (Actual inference):**
 
 ```powershell
-python main.py --users 10 --concurrency 2 --workers 2
+# Windows PowerShell
+$env:USE_REAL_LLM = "1"
+# or just run without setting (default is 1)
+python main.py --users 100 --concurrency 10 --workers 4 --worker-capacity 2 --local-workers
 ```
 
-Turn fast simulation mode on:
+**Configure LLM Model and Parameters:**
 
 ```powershell
-$env:USE_REAL_LLM="0"
+$env:USE_REAL_LLM = "1"
+$env:HF_MODEL_NAME = "distilgpt2"           # Fast model (~500MB)
+$env:HF_MAX_NEW_TOKENS = "32"                # Response length
+$env:HF_TEMPERATURE = "0.2"                  # Creativity (0-1)
+$env:HF_DEVICE = "cpu"                       # "cpu" or "cuda"
+
+python main.py --users 50 --concurrency 5 --workers 4 --worker-capacity 2 --local-workers
 ```
+
+**Recommended Models:**
+
+- **Fast**: `distilgpt2` (~500MB, ~10ms per token)
+- **Better**: `Qwen/Qwen2.5-0.5B-Instruct` (~1.5GB, ~15ms per token)
+- **Larger**: `Qwen/Qwen2.5-1.5B-Instruct` (~5GB, ~25ms per token)
+
+### GPU: Real vs Simulated
+
+Worker deployment mode is controlled by flags in `main.py`.
+
+**Simulated GPU Workers (Local):**
+
+Uses the `--local-workers` flag. Simulates GPU nodes with configurable capacity and failure rates:
+
+```powershell
+python main.py \
+  --users 1000 \
+  --concurrency 50 \
+  --workers 4 \
+  --worker-capacity 2 \
+  --local-workers
+```
+
+**Real GPU Workers (Remote Servers):**
+
+Uses actual worker servers via `--workers-config`:
+
+```powershell
+python main.py \
+  --users 100 \
+  --concurrency 10 \
+  --strategy least_connections \
+  --workers-config config/workers.json
+```
+
+## Command Line Options
+
+```
+Options:
+  --users NUM                  Total requests to generate (default: 100)
+  --concurrency NUM            Max concurrent requests (default: 10)
+  --strategy STR               Load balancing: round_robin, least_connections, load_aware (default: round_robin)
+  --workers NUM                Number of simulated workers (default: 4)
+  --worker-capacity NUM        Requests per worker (default: 2)
+  --failure-rate FLOAT         Simulated failure rate 0.0-1.0 (default: 0.0)
+  --local-workers              Use simulated workers instead of remote config (default: False)
+  --workers-config PATH        Path to workers.json for remote deployment (default: config/workers.json)
+```
+
+## Fault Tolerance Testing
+
+Simulate worker failures and test retry logic:
+
+```powershell
+# 5% failure rate - some requests will fail and be retried
+python main.py --users 100 --concurrency 20 --workers 4 --worker-capacity 2 --failure-rate 0.05 --local-workers
+
+# Higher failure rate for stress testing
+python main.py --users 50 --concurrency 10 --workers 4 --worker-capacity 2 --failure-rate 0.2 --local-workers
+```
+
+## Load Balancing Strategies
+
+**Round Robin**: Distributes requests evenly across all workers in sequence.
+
+```powershell
+python main.py --strategy round_robin --users 100 --concurrency 10 --local-workers
+```
+
+**Least Connections**: Routes to the worker with fewest active requests.
+
+```powershell
+python main.py --strategy least_connections --users 100 --concurrency 10 --local-workers
+```
+
+**Load-Aware**: Considers both active connections and average response time.
+
+```powershell
+python main.py --strategy load_aware --users 100 --concurrency 10 --local-workers
+```
+
+## Performance Metrics
+
+The system tracks and displays:
+
+- **Throughput**: Total requests, successful/failed, success rate, requests/second
+- **Latency**: Average, P50 (median), P95, P99 response times
+- **GPU Utilization**: Average utilization across workers
+- **Load Balance**: Score measuring distribution fairness (lower is better)
+- **Worker Distribution**: Per-worker request counts and performance
+
+## Project Structure
+
+```
+Phase1/
+├── main.py                          # Entry point
+├── requirements.txt                 # Dependencies
+├── README.md                        # This file
+├── config/
+│   └── workers.json                # Worker configurations
+├── client/
+│   └── load_generator.py           # Load testing client
+├── master/
+│   └── scheduler.py                # Request scheduler
+├── lb/
+│   └── load_balancer.py            # Load balancing logic
+├── workers/
+│   ├── gpu_worker.py               # Simulated GPU worker
+│   ├── hf_worker_server.py         # Real worker server
+│   └── remote_gpu_worker.py        # Remote worker interface
+├── llm/
+│   └── inferance.py                # LLM inference (real/simulated)
+├── rag/
+│   └── retriever.py                # Vector index + retrieval
+└── common/
+    ├── metrics.py                  # Performance metrics
+    └── models.py                   # Request/Response models
+```
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `USE_REAL_LLM` | `1` | Use real Hugging Face models (0 = simulated) |
+| `HF_MODEL_NAME` | `distilgpt2` | Hugging Face model to use |
+| `HF_MAX_NEW_TOKENS` | `32` | Max tokens to generate |
+| `HF_TEMPERATURE` | `0.2` | Sampling temperature (0=deterministic) |
+| `HF_DEVICE` | Auto-detect | `cpu` or `cuda` |
+
+## Example Workflows
+
+### 1. Quick Distributed System Test (Simulated)
+
+```powershell
+# Fast test of load balancing without GPU/LLM overhead
+$env:USE_REAL_LLM = "0"
+python main.py --users 1000 --concurrency 50 --workers 4 --worker-capacity 2 --local-workers
+```
+
+### 2. Real LLM Single-Machine Test
+
+```powershell
+# Test with actual Hugging Face inference locally
+$env:HF_MODEL_NAME = "distilgpt2"
+python main.py --users 50 --concurrency 5 --workers 4 --worker-capacity 2 --local-workers
+```
+
+### 3. Distributed Cluster Simulation
+
+```powershell
+# 100 requests across 3 worker servers with smart routing
+python main.py --users 100 --concurrency 10 --strategy load_aware --workers-config config/workers.json
+```
+
+### 4. Fault Tolerance Benchmark
+
+```powershell
+# Test system resilience with 10% failure rate
+python main.py --users 200 --concurrency 20 --failure-rate 0.1 --workers 4 --worker-capacity 2 --local-workers
+```
+
+## Dependencies
+
+- **torch**: PyTorch for LLM inference
+- **transformers**: Hugging Face model loading
+- **sentence-transformers**: Embeddings for RAG
+- **faiss-cpu**: Vector index for retrieval
+- **fastapi**: Worker server API
+- **uvicorn**: ASGI application server
+- **requests**: HTTP client for remote workers
+- **numpy**: Numerical operations
+
+## Notes
+
+- First run of real LLM will download the model (~500MB - 5GB depending on model)
+- Models cache locally in `~/.cache/huggingface/hub/`
+- Use `USE_REAL_LLM=0` for CI/CD and testing without infrastructure
+- Worker timeouts in `config/workers.json` can be adjusted for different network conditions
+- Simulated workers are thread-based; real workers are process-based for isolation
