@@ -1,15 +1,48 @@
 import os
-import threading
 import time
-from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 USE_REAL_LLM = os.getenv("USE_REAL_LLM", "1") == "1"
 HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "distilgpt2")
 HF_MAX_NEW_TOKENS = int(os.getenv("HF_MAX_NEW_TOKENS", "32"))
 HF_TEMPERATURE = float(os.getenv("HF_TEMPERATURE", "0.2"))
 HF_DEVICE = os.getenv("HF_DEVICE")
-generation_lock = threading.RLock()
+
+STUB_VOCAB_SIZE = 4096
+STUB_MAX_LENGTH = 64
+STUB_HIDDEN_DIM = 128
+
+class TorchStubLLM(torch.nn.Module):
+    def __init__(self, vocab_size: int = STUB_VOCAB_SIZE, hidden_dim: int = STUB_HIDDEN_DIM):
+        super().__init__()
+        self.embedding = torch.nn.Embedding(vocab_size, hidden_dim // 2)
+        self.fc = torch.nn.Sequential(
+            torch.nn.Linear(hidden_dim // 2, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, vocab_size)
+        )
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        x = self.embedding(input_ids)
+        x = x.mean(dim=1)
+        return self.fc(x)
+
+
+def _stub_tokenize(prompt: str, max_length: int = STUB_MAX_LENGTH, vocab_size: int = STUB_VOCAB_SIZE):
+    ids = [ord(ch) % vocab_size for ch in prompt][:max_length]
+    if len(ids) < max_length:
+        ids += [0] * (max_length - len(ids))
+    return torch.tensor([ids], dtype=torch.long)
+
+
+def _stub_answer(query: str, logits: torch.Tensor) -> str:
+    # Use the stub model output only to exercise PyTorch compute.
+    _, token_ids = logits.topk(4, dim=-1)
+    tokens = token_ids[0].tolist()
+    suffix = " ".join(f"tok{tid}" for tid in tokens)
+    return f"PyTorch stub response for '{query}'. Signal: {suffix}"
+
 
 if USE_REAL_LLM:
     # Load model and tokenizer (done once for efficiency)
@@ -26,15 +59,25 @@ if USE_REAL_LLM:
     model.eval()
 else:
     tokenizer = None
-    model = None
-    device = torch.device(HF_DEVICE or ('cuda' if torch.cuda.is_available() else 'cpu'))
+    model = TorchStubLLM()
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+    device = torch.device('cpu')
+    model.to(device)
+    model.eval()
+
 
 def run_llm(query, context):
     if not USE_REAL_LLM:
-        # Fast simulation mode lets the distributed system be tested at 1000+
-        # requests without waiting for hundreds of local GPT-2 generations.
-        time.sleep(0.02)
-        return f"Simulated answer for '{query}' using retrieved context: {context[:160]}"
+        prompt = f"Context: {context}\nQ: {query}\nA:"
+        inputs = _stub_tokenize(prompt)
+        inputs = inputs.to(device)
+
+        with torch.no_grad():
+            logits = model(inputs)
+            _ = logits.mean().item()
+
+        return _stub_answer(query, logits)
 
     # Prepare input prompt
     prompt = f"Context: {context}\nQ: {query}\nA:"
@@ -54,7 +97,7 @@ def run_llm(query, context):
     if HF_TEMPERATURE > 0:
         generation_kwargs["temperature"] = HF_TEMPERATURE
 
-    with generation_lock, torch.no_grad():
+    with torch.no_grad():
         outputs = model.generate(
             inputs['input_ids'],
             attention_mask=inputs['attention_mask'],
